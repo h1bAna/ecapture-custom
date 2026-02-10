@@ -406,6 +406,10 @@ static __inline long check_content_length(const char *user_buf) {
 SEC("uprobe/SSL_write")
 int probe_entry_SSL_write(struct pt_regs* ctx) {
     const char* buf = (const char*)PT_REGS_PARM2(ctx);
+    int num = (int)PT_REGS_PARM3(ctx);
+
+    // Always log SSL_write call with data size
+    bpf_printk("SSL_write called: num=%d\n", num);
 
     // Check and log Content-Length header
     long content_length = check_content_length(buf);
