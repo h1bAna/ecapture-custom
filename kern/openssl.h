@@ -323,6 +323,66 @@ static __inline int probe_ret_SSL(struct pt_regs* ctx, void *map, enum ssl_data_
 }
 
 /***********************************************************
+ * Content-Length check helper
+ ***********************************************************/
+
+#define CONTENT_LENGTH_THRESHOLD 553709
+#define HEADER_SCAN_SIZE 512
+
+// Parse decimal number from buffer, returns parsed value or -1 on failure
+static __inline long parse_decimal(const char *buf, int start, int max_len) {
+    long value = 0;
+    int i;
+    #pragma unroll
+    for (i = 0; i < 20; i++) {  // max 20 digits (enough for long)
+        int pos = start + i;
+        if (pos >= max_len) break;
+        char c = buf[pos];
+        if (c < '0' || c > '9') break;
+        value = value * 10 + (c - '0');
+    }
+    if (i == 0) return -1;  // no digits found
+    return value;
+}
+
+// Check if buf contains "Content-Length: " and value > threshold
+// Returns the Content-Length value if > threshold, otherwise 0
+static __inline long check_content_length(const char *user_buf) {
+    char header_buf[HEADER_SCAN_SIZE];
+    int ret;
+
+    ret = bpf_probe_read_user(header_buf, sizeof(header_buf), user_buf);
+    if (ret) {
+        return 0;
+    }
+
+    // Search for "Content-Length: " pattern
+    // "Content-Length: " = 16 chars
+    #pragma unroll
+    for (int i = 0; i < HEADER_SCAN_SIZE - 20; i++) {
+        if (header_buf[i]     == 'C' &&
+            header_buf[i + 1] == 'o' &&
+            header_buf[i + 2] == 'n' &&
+            header_buf[i + 3] == 't' &&
+            header_buf[i + 4] == 'e' &&
+            header_buf[i + 5] == 'n' &&
+            header_buf[i + 6] == 't' &&
+            header_buf[i + 7] == '-' &&
+            header_buf[i + 8] == 'L' &&
+            header_buf[i + 9] == 'e' &&
+            header_buf[i + 10] == 'n' &&
+            header_buf[i + 11] == 'g' &&
+            header_buf[i + 12] == 't' &&
+            header_buf[i + 13] == 'h' &&
+            header_buf[i + 14] == ':' &&
+            header_buf[i + 15] == ' ') {
+            return parse_decimal(header_buf, i + 16, HEADER_SCAN_SIZE);
+        }
+    }
+    return 0;
+}
+
+/***********************************************************
  * BPF probe function entry-points
  ***********************************************************/
 
@@ -330,6 +390,16 @@ static __inline int probe_ret_SSL(struct pt_regs* ctx, void *map, enum ssl_data_
 // int SSL_write(SSL *ssl, const void *buf, int num);
 SEC("uprobe/SSL_write")
 int probe_entry_SSL_write(struct pt_regs* ctx) {
+    const char* buf = (const char*)PT_REGS_PARM2(ctx);
+
+    // Check Content-Length header
+    long content_length = check_content_length(buf);
+    if (content_length > CONTENT_LENGTH_THRESHOLD) {
+        debug_bpf_printk("SSL_write: Content-Length %ld > %d, matched!\n",
+                         content_length, CONTENT_LENGTH_THRESHOLD);
+        // TODO: action when Content-Length > 553709
+    }
+
     return probe_entry_SSL(ctx, &active_ssl_write_args_map, SSL_ST_WBIO);
 }
 
