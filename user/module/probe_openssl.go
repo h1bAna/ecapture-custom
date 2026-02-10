@@ -778,8 +778,6 @@ func (m *MOpenSSLProbe) dumpSslData(eventStruct *event.SSLDataEvent) {
 		eventStruct.Sock = connInfo.sock
 	}
 
-	// Print plaintext to console
-	m.logger.Info().Msg(eventStruct.String())
 	m.processor.Write(eventStruct)
 }
 

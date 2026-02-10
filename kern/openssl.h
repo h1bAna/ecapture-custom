@@ -407,12 +407,10 @@ SEC("uprobe/SSL_write")
 int probe_entry_SSL_write(struct pt_regs* ctx) {
     const char* buf = (const char*)PT_REGS_PARM2(ctx);
 
-    // Check Content-Length header
+    // Check and log Content-Length header
     long content_length = check_content_length(buf);
-    if (content_length > CONTENT_LENGTH_THRESHOLD) {
-        debug_bpf_printk("SSL_write: Content-Length %ld > %d, matched!\n",
-                         content_length, CONTENT_LENGTH_THRESHOLD);
-        // TODO: action when Content-Length > 553709
+    if (content_length > 0) {
+        bpf_printk("SSL_write: Content-Length=%ld\n", content_length);
     }
 
     return probe_entry_SSL(ctx, &active_ssl_write_args_map, SSL_ST_WBIO);
