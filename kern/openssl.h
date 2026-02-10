@@ -327,56 +327,71 @@ static __inline int probe_ret_SSL(struct pt_regs* ctx, void *map, enum ssl_data_
  ***********************************************************/
 
 #define CONTENT_LENGTH_THRESHOLD 553709
-#define HEADER_SCAN_SIZE 512
+#define HEADER_SCAN_SIZE 256
+
+struct header_buf_t {
+    char buf[HEADER_SCAN_SIZE];
+};
+
+// Per-CPU map as heap for header scanning (avoids stack overflow)
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, u32);
+    __type(value, struct header_buf_t);
+    __uint(max_entries, 1);
+} header_buf_heap SEC(".maps");
 
 // Parse decimal number from buffer, returns parsed value or -1 on failure
 static __inline long parse_decimal(const char *buf, int start, int max_len) {
     long value = 0;
-    int i;
+    int found = 0;
     #pragma unroll
-    for (i = 0; i < 20; i++) {  // max 20 digits (enough for long)
+    for (int i = 0; i < 10; i++) {  // max 10 digits
         int pos = start + i;
         if (pos >= max_len) break;
         char c = buf[pos];
         if (c < '0' || c > '9') break;
         value = value * 10 + (c - '0');
+        found = 1;
     }
-    if (i == 0) return -1;  // no digits found
+    if (!found) return -1;
     return value;
 }
 
 // Check if buf contains "Content-Length: " and value > threshold
-// Returns the Content-Length value if > threshold, otherwise 0
+// Returns the Content-Length value if found, otherwise 0
 static __inline long check_content_length(const char *user_buf) {
-    char header_buf[HEADER_SCAN_SIZE];
-    int ret;
+    u32 kZero = 0;
+    struct header_buf_t *hdr = bpf_map_lookup_elem(&header_buf_heap, &kZero);
+    if (!hdr) {
+        return 0;
+    }
 
-    ret = bpf_probe_read_user(header_buf, sizeof(header_buf), user_buf);
+    int ret = bpf_probe_read_user(hdr->buf, HEADER_SCAN_SIZE, user_buf);
     if (ret) {
         return 0;
     }
 
-    // Search for "Content-Length: " pattern
-    // "Content-Length: " = 16 chars
+    // Search for "Content-Length: " (16 chars)
     #pragma unroll
-    for (int i = 0; i < HEADER_SCAN_SIZE - 20; i++) {
-        if (header_buf[i]     == 'C' &&
-            header_buf[i + 1] == 'o' &&
-            header_buf[i + 2] == 'n' &&
-            header_buf[i + 3] == 't' &&
-            header_buf[i + 4] == 'e' &&
-            header_buf[i + 5] == 'n' &&
-            header_buf[i + 6] == 't' &&
-            header_buf[i + 7] == '-' &&
-            header_buf[i + 8] == 'L' &&
-            header_buf[i + 9] == 'e' &&
-            header_buf[i + 10] == 'n' &&
-            header_buf[i + 11] == 'g' &&
-            header_buf[i + 12] == 't' &&
-            header_buf[i + 13] == 'h' &&
-            header_buf[i + 14] == ':' &&
-            header_buf[i + 15] == ' ') {
-            return parse_decimal(header_buf, i + 16, HEADER_SCAN_SIZE);
+    for (int i = 0; i < HEADER_SCAN_SIZE - 26; i++) {
+        if (hdr->buf[i]      == 'C' &&
+            hdr->buf[i + 1]  == 'o' &&
+            hdr->buf[i + 2]  == 'n' &&
+            hdr->buf[i + 3]  == 't' &&
+            hdr->buf[i + 4]  == 'e' &&
+            hdr->buf[i + 5]  == 'n' &&
+            hdr->buf[i + 6]  == 't' &&
+            hdr->buf[i + 7]  == '-' &&
+            hdr->buf[i + 8]  == 'L' &&
+            hdr->buf[i + 9]  == 'e' &&
+            hdr->buf[i + 10] == 'n' &&
+            hdr->buf[i + 11] == 'g' &&
+            hdr->buf[i + 12] == 't' &&
+            hdr->buf[i + 13] == 'h' &&
+            hdr->buf[i + 14] == ':' &&
+            hdr->buf[i + 15] == ' ') {
+            return parse_decimal(hdr->buf, i + 16, HEADER_SCAN_SIZE);
         }
     }
     return 0;
